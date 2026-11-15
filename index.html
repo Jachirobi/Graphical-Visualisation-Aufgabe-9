@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <script>
+    // Design vor dem ersten Zeichnen setzen (kein Aufblitzen des hellen Designs)
+    (function () {
+      var t = null;
+      try { t = localStorage.getItem("theme"); } catch (e) {}
+      if (t !== "dark" && t !== "light") {
+        t = window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+      }
+      document.documentElement.setAttribute("data-theme", t);
+    })();
+  </script>
+  <title>Texturierter Torus – WebGL</title>
+  <meta name="description" content="Ein Torus mit Texturkoordinaten: selbst erzeugte Marmor-Bildtextur und als Erweiterung eine prozedurale Azulejo-Kacheltextur im Fragment-Shader.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  <style>
+    .mode-switch { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.5rem; margin: 0 0 1rem; }
+    .mode-switch .seg { min-height: 56px; font-size: 1.02rem; font-weight: 700; padding: 0.5rem 0.75rem; border-radius: 14px; }
+    .mode-switch .seg small { display: block; font-weight: 400; font-size: 0.85rem; }
+    @media (max-width: 34rem) { .mode-switch { grid-template-columns: 1fr; } }
+    .tex-preview { margin: 0.5rem 0 1rem; }
+    .tex-preview img { width: 100%; height: auto; display: block; border-radius: 14px; border: 1px solid var(--line); }
+    .tex-preview figcaption { color: var(--ink-soft); font-size: 0.95rem; margin-top: 0.4rem; }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+  <a class="skip" href="#buehne">Zur Szene springen</a>
+
+  <header>
+    <div class="topbar">
+      <button type="button" id="theme-switch" class="theme-switch" role="switch" aria-checked="false">
+        <span class="track" aria-hidden="true"><span class="thumb"></span></span>
+        <span>Dunkles Design</span>
+      </button>
+    </div>
+    <div class="intro">
+      <h1>Ein texturierter Torus</h1>
+      <p>Der Torus bekommt zu jeder Ecke eine Texturkoordinate (<var>u</var>, <var>v</var>). Damit trägt er wahlweise eine selbst erzeugte Marmor-Bildtextur oder, als Erweiterung, portugiesische Azulejo-Kacheln, die der Fragment-Shader rein rechnerisch erzeugt. Beide Texturen und die Kontrollansicht lassen sich jederzeit über die großen Schalter unter dem Bild hin- und herschalten.</p>
+    </div>
+  </header>
+
+  <main>
+    <section class="stage" id="buehne" tabindex="-1" aria-labelledby="h-szene">
+      <h2 id="h-szene">Die Szene</h2>
+
+      <div class="mode-switch" role="radiogroup" id="mode-group" aria-label="Textur wählen">
+        <button type="button" class="seg" role="radio" data-mode="bild" aria-checked="true" tabindex="0">1 · Bildtextur<small>Marmor (Grundaufgabe)</small></button>
+        <button type="button" class="seg" role="radio" data-mode="prozedural" aria-checked="false" tabindex="-1">2 · Prozedural<small>Azulejo-Kacheln (Erweiterung)</small></button>
+        <button type="button" class="seg" role="radio" data-mode="uv" aria-checked="false" tabindex="-1">3 · UV-Koordinaten<small>Kontrollansicht</small></button>
+      </div>
+
+      <figure class="scene-wrap">
+        <canvas id="gl" class="gl-canvas" width="1600" height="1000" tabindex="0" role="img" aria-labelledby="canvas-desc" aria-describedby="key-hint">
+          Ihr Browser kann das Canvas-Element nicht darstellen.
+        </canvas>
+        <figcaption id="canvas-desc" class="visually-hidden">Texturierter Torus.</figcaption>
+      </figure>
+      <p id="key-hint" class="hint">Kamera: <kbd>←</kbd> <kbd>→</kbd> oder <kbd>A</kbd> <kbd>D</kbd> kreisen, <kbd>↑</kbd> <kbd>↓</kbd> oder <kbd>W</kbd> <kbd>S</kbd> höher/tiefer, <kbd>N</kbd> Abstand, <kbd>R</kbd> zurück. Textur: <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> oder <kbd>M</kbd>, Abwicklung: <kbd>F</kbd>.</p>
+
+      <div class="cam-grid" id="steuerung">
+        <div class="ctrl-group" role="group" aria-labelledby="h-textur">
+          <h3 id="h-textur">Textur</h3>
+          <div class="ctrl-row">
+            <button type="button" class="btn btn-primary btn-sm" id="btn-flat" aria-pressed="false" aria-keyshortcuts="F">Abwicklung als Ebene <kbd aria-hidden="true">F</kbd></button>
+          </div>
+          <div class="anim-row" id="row-repeat">
+            <label for="repeat">Wiederholungen rundherum</label>
+            <input type="range" id="repeat" min="1" max="4" step="1" value="1">
+            <output id="repeat-out" for="repeat">1×</output>
+          </div>
+          <div id="row-tiles" hidden>
+            <div class="anim-row">
+              <label for="tiles-u">Kacheln rundherum</label>
+              <input type="range" id="tiles-u" min="12" max="60" step="4" value="36">
+              <output id="tiles-u-out" for="tiles-u">36</output>
+            </div>
+            <div class="anim-row">
+              <label for="tiles-v">Kacheln um die Röhre</label>
+              <input type="range" id="tiles-v" min="6" max="20" step="2" value="12">
+              <output id="tiles-v-out" for="tiles-v">12</output>
+            </div>
+          </div>
+          <dl class="readout-grid" aria-label="Texturwerte">
+            <dt>Ansicht</dt><dd id="ro-mode">–</dd>
+            <dt>Form</dt><dd id="ro-form">–</dd>
+            <dt>Bilddatei</dt><dd id="ro-tex">wird geladen …</dd>
+          </dl>
+        </div>
+
+        <div class="ctrl-group" role="group" aria-labelledby="h-kamera">
+          <h3 id="h-kamera">Kamera</h3>
+          <div class="ctrl-row">
+            <button type="button" class="btn btn-sm" id="btn-left" aria-keyshortcuts="ArrowLeft A">Links <kbd aria-hidden="true">← A</kbd></button>
+            <button type="button" class="btn btn-sm" id="btn-right" aria-keyshortcuts="ArrowRight D">Rechts <kbd aria-hidden="true">→ D</kbd></button>
+            <button type="button" class="btn btn-sm" id="btn-up" aria-keyshortcuts="ArrowUp W">Höher <kbd aria-hidden="true">↑ W</kbd></button>
+            <button type="button" class="btn btn-sm" id="btn-down" aria-keyshortcuts="ArrowDown S">Tiefer <kbd aria-hidden="true">↓ S</kbd></button>
+          </div>
+          <div class="ctrl-row">
+            <button type="button" class="btn btn-sm" id="btn-near" aria-keyshortcuts="Shift+N">Näher <kbd aria-hidden="true">⇧N</kbd></button>
+            <button type="button" class="btn btn-sm" id="btn-far" aria-keyshortcuts="N">Weiter weg <kbd aria-hidden="true">N</kbd></button>
+            <button type="button" class="btn btn-sm" id="btn-reset" aria-keyshortcuts="R">Zurücksetzen <kbd aria-hidden="true">R</kbd></button>
+          </div>
+          <dl class="readout-grid" aria-label="Kamerawerte">
+            <dt>Kamera</dt><dd id="ro-cam">–</dd>
+          </dl>
+          <div class="ctrl-row">
+            <label class="check"><input type="checkbox" id="toggle-shortcuts" checked aria-describedby="shortcut-hint"> Tastenkürzel aktiv</label>
+          </div>
+          <p id="shortcut-hint" class="visually-hidden">Einzeltasten W, A, S, D, N, R, M, F und 1 bis 3. Abschalten, wenn sie mit Hilfsmitteln kollidieren.</p>
+        </div>
+      </div>
+
+      <p id="status" class="status" role="status" aria-live="polite" aria-atomic="true">WebGL wird gestartet …</p>
+    </section>
+
+    <section class="doc" aria-labelledby="h-bedienung">
+      <h2 id="h-bedienung">Bedienung</h2>
+      <div class="table-scroll">
+        <table class="keys">
+          <caption>Alle Interaktionen</caption>
+          <thead><tr><th scope="col">Taste</th><th scope="col">Wirkung</th><th scope="col">Auch per</th></tr></thead>
+          <tbody>
+            <tr><td><kbd>←</kbd> <kbd>→</kbd> oder <kbd>A</kbd> <kbd>D</kbd></td><td>Kamera um den Torus kreisen (5° je Druck). Die Pfeiltasten wirken, solange der Fokus in der Szene liegt.</td><td>Links/Rechts, waagerecht ziehen</td></tr>
+            <tr><td><kbd>↑</kbd> <kbd>↓</kbd> oder <kbd>W</kbd> <kbd>S</kbd></td><td>Kamera höher/tiefer – auch unter den Torus</td><td>Höher/Tiefer, senkrecht ziehen</td></tr>
+            <tr><td><kbd>N</kbd> / <kbd>Umschalt</kbd>+<kbd>N</kbd></td><td>Kamera weiter weg/näher</td><td>Weiter weg/Näher, Mausrad</td></tr>
+            <tr><td><kbd>R</kbd></td><td>Kamera zurücksetzen</td><td>Zurücksetzen</td></tr>
+            <tr><td><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd></td><td>Bildtextur, prozedurale Textur, UV-Kontrollansicht – jederzeit zurückschaltbar</td><td>Große Schalter über dem Bild</td></tr>
+            <tr><td><kbd>M</kbd></td><td>Zur nächsten Textur wechseln</td><td>–</td></tr>
+            <tr><td><kbd>F</kbd></td><td>Torus aufgeschnitten als Ebene zeigen und zurück</td><td>Abwicklung als Ebene</td></tr>
+            <tr><td>–</td><td>Wiederholungen der Bildtextur bzw. Kachelanzahl der prozeduralen Textur</td><td>Schieberegler (erscheinen passend zur Textur)</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="doc doc-wide" aria-labelledby="h-uv">
+      <h2 id="h-uv">Texturkoordinaten für den Torus</h2>
+      <p>Der Torus wird als Gitter aus (<var>n<sub>u</sub></var> + 1) × (<var>n<sub>v</sub></var> + 1) Ecken erzeugt (hier 121 × 49 = <span id="info-verts">–</span> Ecken, <span id="info-tris">–</span> Dreiecke). Zu Position und Normale kommt pro Ecke ein drittes Attribut <code>aUV</code> mit zwei Werten hinzu:</p>
+      <div class="math" aria-label="Torus mit Texturkoordinaten">
+        <div><var>P</var>(<var>u</var>, <var>v</var>) = ( (<var>R</var> + <var>r</var> cos 2π<var>v</var>) cos 2π<var>u</var>, &nbsp;<var>r</var> sin 2π<var>v</var>, &nbsp;(<var>R</var> + <var>r</var> cos 2π<var>v</var>) sin 2π<var>u</var> ), &nbsp; <var>R</var> = 1, <var>r</var> = 0,42</div>
+        <div>Texturkoordinate = (<var>u</var>, <var>v</var>) = (<var>i</var> / <var>n<sub>u</sub></var>, &nbsp;<var>j</var> / <var>n<sub>v</sub></var>) ∈ [0, 1]²</div>
+      </div>
+      <p><var>u</var> läuft also einmal um die Mittelachse, <var>v</var> einmal um die Röhre. Die erste und die letzte Spalte liegen an derselben Stelle im Raum, tragen aber <var>u</var> = 0 bzw. <var>u</var> = 1, deshalb gibt es die Ecken dort doppelt. Würde man sie zusammenlegen, liefe die Textur in der letzten Dreiecksreihe einmal rückwärts von 1 nach 0 durch. Der Vertex-Shader reicht (<var>u</var>, <var>v</var>) als <code>varying</code> weiter, die Rasterung interpoliert sie für jedes Fragment, und der Fragment-Shader liest damit die Farbe: <code>texture2D(uTex, vUV * uRepeat)</code>.</p>
+      <p>Die Kontrollansicht <kbd>3</kbd> zeigt <var>u</var> als Rot- und <var>v</var> als Grünanteil mit Gitterlinien in Achtelschritten. Mit <kbd>F</kbd> wird der Torus „aufgeschnitten“ und als Rechteck mit derselben Textur gezeigt – so sieht man, wie das Bild um den Körper gewickelt wird: Außen wird es gestreckt, im Loch gestaucht.</p>
+    </section>
+
+    <section class="doc doc-wide" aria-labelledby="h-bild">
+      <h2 id="h-bild">Grundaufgabe: Bildtextur „Marmor“</h2>
+      <figure class="tex-preview">
+        <img src="textures/marmor.jpg" width="1024" height="512" alt="Marmorbild in Türkis und Dunkelblau mit weißen, leicht leuchtenden und dünnen goldenen Adern, die schräg durch das Bild laufen." loading="lazy">
+        <figcaption>textures/marmor.jpg, 1024 × 512 Pixel, JPEG – vollständig selbst erzeugt.</figcaption>
+      </figure>
+      <p><strong>Selbst erstellt:</strong> Das Bild ist nicht aus dem Internet und nicht von einem KI-Bildgenerator, sondern mit einem eigenen Python-Programm berechnet (<a href="textures/marmor.py">textures/marmor.py</a>, mit NumPy und Pillow). Vorgehen:</p>
+      <ol class="steps">
+        <li><strong>Periodisches Rauschen:</strong> Zufällige Phasen werden im Frequenzraum mit einem 1/<var>f</var>-Spektrum gewichtet und per inverser FFT zurückgerechnet. Weil die FFT von periodischen Signalen ausgeht, passt das Bild an allen vier Rändern lückenlos aneinander. Auf dem Torus ist keine Naht zu sehen.</li>
+        <li><strong>Grundfarbe:</strong> Weiches Rauschen steuert einen Verlauf von Dunkelblau über Petrol zu Türkis; feine Körnung macht die Fläche steinig.</li>
+        <li><strong>Adern:</strong> |sin(2π(3<var>x</var> + 2<var>y</var>) + Rauschen)| ergibt verwirbelte Linien. Eine klassische Marmorformel nach Perlin. Die ganzzahligen Faktoren halten auch die Adern kachelbar. Weiße Adern bekommen einen schmalen Kern und einen weichen Schimmer, eine zweite, gekreuzte Schar wird zu dünnen Goldadern.</li>
+        <li><strong>Format:</strong> 1024 × 512 ist eine Zweierpotenz. Nur dann erlaubt WebGL 1 die Wiederholung (<code>REPEAT</code>) und Mipmaps (<code>LINEAR_MIPMAP_LINEAR</code>), die das Flimmern bei schrägem Blick verhindern.</li>
+      </ol>
+      <p>Das Seitenverhältnis 2 : 1 passt grob zum Torus: Der Weg rundherum (2π<var>R</var> ≈ 6,3) ist etwa 2,4-mal so lang wie der Weg um die Röhre (2π<var>r</var> ≈ 2,6). Mit dem Regler lässt sich das Bild rundherum bis zu viermal wiederholen.</p>
+    </section>
+
+    <section class="doc doc-wide" aria-labelledby="h-proz">
+      <h2 id="h-proz">Erweiterung: Prozedurale Textur „Azulejo“</h2>
+      <p>Die zweite Textur kommt ohne Bilddatei aus: Der Fragment-Shader berechnet für jedes Fragment aus (<var>u</var>, <var>v</var>), welche Farbe es hat. Das Motiv sind portugiesische Wandfliesen (Azulejos) (weiß glasiert mit kobaltblauen Ornamenten).</p>
+      <ol class="steps">
+        <li><strong>Kacheln:</strong> <code>g = uv * uTiles</code> zerlegt die Fläche in 36 × 12 Kacheln. <code>floor(g)</code> nummeriert die Kachel, <code>fract(g)</code> liefert die Lage darin, umgerechnet auf [−1, 1]. Weil die Kachelanzahl ganzzahlig ist (auch im Regler), schließt das Muster bei <var>u</var> = 1 nahtlos an <var>u</var> = 0 an.</li>
+        <li><strong>Blüte:</strong> In Polarkoordinaten (<var>ρ</var>, <var>φ</var>) beschreibt <var>ρ</var> = 0,48 + 0,2 · cos 4<var>φ</var> eine vierblättrige Blüte; innen ockerfarben gefüllt, der Rand als blaue Linie.</li>
+        <li><strong>Übergreifendes Muster:</strong> Viertelkreise in den Ecken jeder Kachel setzen sich mit den drei Nachbarkacheln zu Ringen zusammen. Jede zweite Kachel wird gespiegelt, so entsteht ein größeres Muster über 2 × 2 Kacheln, wie bei echten Fliesenwänden.</li>
+        <li><strong>Handwerkliche Unregelmäßigkeit:</strong> Eine Hash-Funktion der Kachelnummer variiert Glasurton und Blauintensität ein wenig, die Kanten jeder Kachel werden leicht abgedunkelt (Wölbung der Glasur).</li>
+        <li><strong>Fugen:</strong> Ein schmaler grauer Rand zwischen den Kacheln. Glasur glänzt, die Fugen nicht. Der Glanzanteil des Lichts wird dort abgeschaltet.</li>
+      </ol>
+      <pre class="code"><code>vec2 g = uv * uTiles;  vec2 cell = mod(floor(g), uTiles);  vec2 p = fract(g) * 2.0 - 1.0;
+float petal = length(p) - (0.48 + 0.2 * cos(4.0 * atan(p.y, p.x)));   // Blüte
+if (petal &lt; 0.0) col = mix(col, ochre, 0.85);
+col = mix(col, cobalt, line(petal, 0.07));                             // Kontur
+col = mix(col, cobalt, line(length(abs(p) - 1.0) - 0.55, 0.08));       // Ring über die Ecken</code></pre>
+      <p>Vorteile gegenüber der Bildtextur: beliebig scharf auch aus der Nähe, keine Datei, und Parameter wie die Kachelanzahl lassen sich live ändern.</p>
+    </section>
+
+    <section class="doc" aria-labelledby="h-a11y">
+      <h2 id="h-a11y">Barrierefreiheit</h2>
+      <dl class="hci">
+        <dt>Umschalter</dt>
+        <dd>Die Texturwahl ist eine große, gut sichtbare Auswahl über dem Bild (Mindesthöhe 56 px) und jederzeit zurückschaltbar; die Abwicklung ist ein Ein-/Aus-Schalter (2.5.8, 4.1.2).</dd>
+        <dt>Tastatur</dt>
+        <dd>Jede Funktion gibt es als Taste und als Schaltfläche; die Einzeltasten lassen sich abschalten (2.1.1, 2.1.4).</dd>
+        <dt>Textalternativen</dt>
+        <dd>Das Canvas beschreibt die aktuelle Ansicht, das Texturbild hat einen Alternativtext (1.1.1).</dd>
+        <dt>Fehler</dt>
+        <dd>Kann die Bilddatei nicht geladen werden, erscheint ein Hinweis mit Lösung (lokalen Webserver starten), die Szene läuft mit Ersatzfarbe weiter (3.3.1).</dd>
+      </dl>
+    </section>
+
+    <section class="doc" aria-labelledby="h-qa">
+      <h2 id="h-qa">Test und Qualitätssicherung</h2>
+      <p>Getestet in Chrome unter macOS in beiden Designs: alle drei Texturen hin und zurück, Abwicklung an und aus, alle Reglerstellungen, Kamera mit Pfeiltasten und mit <kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd>, auch unter den Torus. Keine sichtbare Naht bei <var>u</var> = 0 und <var>v</var> = 0. Fehlerfall geprüft: fehlende Bilddatei führt zur Meldung statt zum Absturz. Die Seite muss über einen Webserver laufen (GitHub Pages bzw. lokal <code>python3 -m http.server</code>), weil Browser Bilder aus <code>file://</code> nicht als WebGL-Textur zulassen (CORS). Die Konsole (<kbd>Cmd</kbd>+<kbd>Alt</kbd>+<kbd>J</kbd>) zeigt nur eine Info-Meldung, keine Fehler.</p>
+    </section>
+
+    <section class="doc" aria-labelledby="h-quellen">
+      <h2 id="h-quellen">Quellen</h2>
+      <ul class="sources">
+        <li><strong>Texturen in WebGL:</strong> <a href="https://developer.mozilla.org/en-US/docs/Web/API/WebGL_API/Tutorial/Using_textures_in_WebGL">MDN: Using textures in WebGL</a> (Laden, Zweierpotenzen, Mipmaps), <a href="https://webglfundamentals.org/webgl/lessons/webgl-3d-textures.html">WebGL Fundamentals: Textures</a>, <a href="https://webglfundamentals.org/webgl/lessons/webgl-cors-permission.html">WebGL Fundamentals: Cross-Origin Images</a>.</li>
+        <li><strong>Lokaler Webserver:</strong> <a href="https://mrcoles.com/how-start-local-web-server-view-html-files/">mrcoles.com: How to start a local web server</a>.</li>
+        <li><strong>Marmor und Rauschen:</strong> Ken Perlin, „An Image Synthesizer“, SIGGRAPH 1985 (Marmor über sin(x + Turbulenz)); <a href="https://thebookofshaders.com/11/">The Book of Shaders: Noise</a>.</li>
+        <li><strong>Prozedurale Muster:</strong> <a href="https://thebookofshaders.com/09/">The Book of Shaders: Patterns</a> (Kacheln mit fract/floor), <a href="https://thebookofshaders.com/07/">Shapes</a> (Polarkoordinaten-Blüte); Motiv angelehnt an <a href="https://de.wikipedia.org/wiki/Azulejo">Azulejos (Wikipedia)</a>.</li>
+        <li><strong>Bildmaterial:</strong> textures/marmor.jpg und das Azulejo-Muster sind selbst erstellt, ohne fremdes Ausgangsmaterial.</li>
+        <li><strong>Seite und Code:</strong> selbst erstellt, aufbauend auf den Aufgaben 4 bis 8.</li>
+        <li><strong>Schrift:</strong> Bricolage Grotesque, Mathieu Triay, SIL Open Font License, über <a href="https://fonts.google.com/specimen/Bricolage+Grotesque">Google Fonts</a>.</li>
+      </ul>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <p>Thomas Brehmer, M.Sc. Medieninformatik, BHT Berlin</p>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
